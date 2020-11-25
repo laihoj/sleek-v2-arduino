@@ -3,3 +3,5 @@ This is the repository of Sleek firmware. Sleek is the working title for a weara
 
 Run on an Arduino Nano IoT 33
 
+## App
+App and further description of the device found at https://confident-tereshkova-0987e8.netlify.app/#/device/
