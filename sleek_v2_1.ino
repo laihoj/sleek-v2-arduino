@@ -15,7 +15,7 @@ WiFiServer server(80);
 #include <WiFiUdp.h>
 
 WiFiUDP Udp;
-unsigned int localPort = 9999;      // local port to listen on
+unsigned int localPort = 9999;      // local port to listen oin
 
 #include <ArduinoJson.h>
 
@@ -508,6 +508,8 @@ void openAccessPoint() {
 
   // you're connected now, so print out the status
   printWiFiStatus();
+  println("AP home page usually accessible at 192.168.4.1");
+  
 }
 
 
