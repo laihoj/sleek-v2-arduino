@@ -41,12 +41,27 @@ typedef struct {
   int port;
 } UDPTarget;
 
+
+//put all kinds of configurable local variables in here
+typedef struct {
+  int samplingRate;
+  //String name;
+} Configuration;
+
+
+
 FlashStorage(my_flash_store, Credentials);
 
 Credentials creds;
 
 FlashStorage(udpTarget_flash_store, UDPTarget);
 UDPTarget udpTarget;
+
+FlashStorage(configuration_flash_store, Configuration);
+Configuration conf;
+
+
+
 
 //arbitrarily chosen values
 #define PROGRAM_STATE_CLEANUP 4
@@ -160,6 +175,12 @@ static void readSensorsThread( void *pvParameters )
   } else {
     println("IMU operational");
   }
+
+  //set output rate
+  conf = configuration_flash_store.read();
+  conf.samplingRate = 10;
+  configuration_flash_store.write(conf);
+        
   while (true) {
     xSemaphoreTake( NORM_semA, portMAX_DELAY );
     if (PROGRAM_STATE != PROGRAM_STATE_NORMAL) {
@@ -168,7 +189,9 @@ static void readSensorsThread( void *pvParameters )
       vTaskDelete( NULL );
     }
     //simulate execution
-    myDelayMs(100);
+    int sampling_delay = 1000 / conf.samplingRate;
+    
+    myDelayMs(sampling_delay);
     readSensors();
 
     xSemaphoreGive( NORM_semB );
@@ -192,22 +215,17 @@ void readSensors() {
 static void configServerThread( void *pvParameters )
 {
   println("configServerThread: Started");
-//  xSemaphoreTake( NORM_semC, portMAX_DELAY );
-//  server.begin();
-  println("Config server running");
   
   while (  true  ) {
-//    println("Taking norm sem c");
     xSemaphoreTake( NORM_semC, portMAX_DELAY );
     if (PROGRAM_STATE != PROGRAM_STATE_NORMAL) {
-      println("configServerThread Thread finishing..");
       xSemaphoreTake( NORM_semC, portMAX_DELAY );
       println("configServerThread Thread finished");
       vTaskDelete( NULL );
     }
-    //THREAD EXECUTION
-//    myDelayMs(5000);
+    
     configServerHandler();
+    
     xSemaphoreGive( NORM_semA );
   }
 }
@@ -217,119 +235,79 @@ static void configServerThread( void *pvParameters )
 //*****************************************************************
 static void configServerHandler()
 {
-//  server.begin();
-//  println("Config server running");
-//  while(true) {
-//    myDelayMs(5000); // every 5 second
-
-    char prevChar = 'a';  //dummy char
-    String currentLine = ""; //store response body
-    boolean bodyFound = false;
-    boolean currentLineIsBlank = true;
-    WiFiClient configClient = server.available();
-    if (configClient) {
-      while (configClient.connected()) {
-        if (configClient.available()) {
-          char c = configClient.read();
-          if (bodyFound) {
-            currentLine += c; //accumulate characters only when body upcoming
-          }
-    
-          if (prevChar == '\n' && c == '\r') { //somehow this means body starting
-            bodyFound = true;
-          }
-          prevChar = c;
-
-
-          if (c == '\n' && currentLineIsBlank) {
-            println("sending http response to client");
-            configClient.println("HTTP/1.1 200 OK");
-            configClient.println("Content-Type: text/html");
-            configClient.println("Connection: close");  // the connection will be closed after completion of the response
-            configClient.println();
-            configClient.println("OK FROM DEVICE");
-            
-          }
-          if (c == '\n') {
-            // you're starting a new line
-            currentLineIsBlank = true;
-          } else if (c != '\r') {
-            // you've gotten a character on the current line
-            currentLineIsBlank = false;
-          }
-        } else {
-          delay(1);
-          configClient.stop();  // close the connection:
-          println("client disconnected");
+  char prevChar = 'a';        //dummy char
+  String currentLine = "";    //store response body
+  boolean bodyFound = false;  //check if http request body found
+  boolean currentLineIsBlank = true; //useful to check if client message is finished
+  
+  WiFiClient configClient = server.available();
+  if (configClient) {
+    while (configClient.connected()) {
+      if (configClient.available()) {
+        char c = configClient.read(); //read messages one char at a time
+        if (bodyFound) {
+          currentLine += c; //accumulate characters only when body upcoming
         }
+  
+        if (prevChar == '\n' && c == '\r') { //somehow this means request body starting
+          bodyFound = true;
+        }
+        prevChar = c;
+
+
+        if (c == '\n' && currentLineIsBlank) {  //time to respond to client
+          //sending http response to client
+          configClient.println("HTTP/1.1 200 OK");
+          configClient.println("Content-Type: text/html");
+          configClient.println("Connection: close");  // the connection will be closed after completion of the response
+          configClient.println();
+          configClient.println("OK FROM DEVICE");
+        }
+        
+        if (c == '\n') {          // you're starting a new line
+          currentLineIsBlank = true;
+        } else if (c != '\r') {   // you've gotten a character on the current line
+          currentLineIsBlank = false;
+        }
+      } else {
+        delay(1);
+        configClient.stop();  // close the connection:
+        println("client disconnected");
       }
-      
+    }
+
+    //backup client stop connection close reduntant?
+    if (configClient) {
       delay(1);
       configClient.stop();  // close the connection:
       println("client disconnected");
     }
+  }
 
-    currentLine.trim(); //clear whitespace
-    if (bodyFound) {
-      DeserializationError error = deserializeJson(doc, currentLine); //body is JSON, try to parse
-      if (error) {
-        print(F("deserializeJson() failed: "));
-        println(error.c_str());
+  currentLine.trim(); //clear whitespace
+  if (bodyFound) {
+    DeserializationError error = deserializeJson(doc, currentLine); //body is JSON, try to parse
+    if (error) {
+      print(F("deserializeJson() failed: "));
+      println(error.c_str());
+    } else {
+      bodyFound = false;  //reset this variable for later requests
+
+      //Store messages in flash to config
+      String samplingRateString = doc["samplingRate"];
+      print("Incoming SR request: ");
+      println(samplingRateString);
+      int SR_temp = samplingRateString.toInt();
+      
+      if (SR_temp && SR_temp > 0 && SR_temp < 300) {  //error handling
+        conf = configuration_flash_store.read();
+        conf.samplingRate = SR_temp;
+        configuration_flash_store.write(conf);
       } else {
-        bodyFound = false;
-        String testString = doc["test"];
-        println(testString);
-        String testString2 = doc["test2"];
-        println(testString2);
+        println("Enter samplingRate between 0 and 300");
       }
     }
-    
-
-
-
-
-        
-//      WiFiClient configClient = server.available();
-//      if (configClient) {
-//        println("new client");
-//        // an http request ends with a blank line
-//        boolean currentLineIsBlank = true;
-//        while (configClient.connected()) {
-//          if (configClient.available()) {
-//            char c = configClient.read();
-//            write(c);
-//            // if you've gotten to the end of the line (received a newline
-//            // character) and the line is blank, the http request has ended,
-//            // so you can send a reply
-//            if (c == '\n' && currentLineIsBlank) {
-//              // send a standard http response header
-//              configClient.println("HTTP/1.1 200 OK");
-//              configClient.println("Content-Type: text/html");
-//              configClient.println("Connection: close");  // the connection will be closed after completion of the response
-////              configClient.println("Refresh: 5");  // refresh the page automatically every 5 sec
-//              configClient.println();
-//              configClient.println("<!DOCTYPE HTML>");
-//              configClient.println("<html>hello</html>");
-//              
-//              break;
-//            }
-//            if (c == '\n') {
-//              // you're starting a new line
-//              currentLineIsBlank = true;
-//            } else if (c != '\r') {
-//              // you've gotten a character on the current line
-//              currentLineIsBlank = false;
-//            }
-//          }
-//        }
-//        // give the web browser time to receive the data
-//        delay(1);
-//    
-//        // close the connection:
-//        configClient.stop();
-//        println("client disconnected");
-//      }
-//  }
+  }
 }
 
 //*****************************************************************
@@ -1390,6 +1368,10 @@ void setup() {
   // Also initializes a handler pointer to each task, which are important to communicate with and retrieve info from tasks
 
 
+
+  
+
+  
   //  //TODO: figure out why taskmonitor causes crashes. probably too much activity at serial buffer ??
   //  xTaskCreate(
   //    taskMonitor
