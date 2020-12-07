@@ -9,6 +9,7 @@
 int status = WL_IDLE_STATUS;
 int IMU_status = 0;
 WiFiServer server(80);
+WiFiServer configServer(79);
 
 #define SECRET_SSID "sleek_device_1nf7noui2t"   //TODO: generate the identifier thing
 
@@ -82,6 +83,7 @@ TaskHandle_t Handle_UDPTargetCheckTask;
 TaskHandle_t Handle_StartNormalOperationTask;
 TaskHandle_t Handle_ReadSensorsTask;
 TaskHandle_t Handle_TransmitReadingsTask;
+TaskHandle_t Handle_ConfigServerTask;
 
 
 
@@ -97,7 +99,7 @@ SemaphoreHandle_t semA, semB, semC, semD, semF;
 
 SemaphoreHandle_t UDP_semA, UDP_semB, UDP_semC;
 
-SemaphoreHandle_t NORM_semA, NORM_semB;
+SemaphoreHandle_t NORM_semA, NORM_semB, NORM_semC;
 
 
 void myDelayMs(int ms)
@@ -186,6 +188,150 @@ void readSensors() {
   }
 }
 
+//
+static void configServerThread( void *pvParameters )
+{
+  println("configServerThread: Started");
+//  xSemaphoreTake( NORM_semC, portMAX_DELAY );
+//  server.begin();
+  println("Config server running");
+  
+  while (  true  ) {
+//    println("Taking norm sem c");
+    xSemaphoreTake( NORM_semC, portMAX_DELAY );
+    if (PROGRAM_STATE != PROGRAM_STATE_NORMAL) {
+      println("configServerThread Thread finishing..");
+      xSemaphoreTake( NORM_semC, portMAX_DELAY );
+      println("configServerThread Thread finished");
+      vTaskDelete( NULL );
+    }
+    //THREAD EXECUTION
+//    myDelayMs(5000);
+    configServerHandler();
+    xSemaphoreGive( NORM_semA );
+  }
+}
+
+//*****************************************************************
+// Create a thread that handles config messages
+//*****************************************************************
+static void configServerHandler()
+{
+//  server.begin();
+//  println("Config server running");
+//  while(true) {
+//    myDelayMs(5000); // every 5 second
+
+    char prevChar = 'a';  //dummy char
+    String currentLine = ""; //store response body
+    boolean bodyFound = false;
+    boolean currentLineIsBlank = true;
+    WiFiClient configClient = server.available();
+    if (configClient) {
+      while (configClient.connected()) {
+        if (configClient.available()) {
+          char c = configClient.read();
+          if (bodyFound) {
+            currentLine += c; //accumulate characters only when body upcoming
+          }
+    
+          if (prevChar == '\n' && c == '\r') { //somehow this means body starting
+            bodyFound = true;
+          }
+          prevChar = c;
+
+
+          if (c == '\n' && currentLineIsBlank) {
+            println("sending http response to client");
+            configClient.println("HTTP/1.1 200 OK");
+            configClient.println("Content-Type: text/html");
+            configClient.println("Connection: close");  // the connection will be closed after completion of the response
+            configClient.println();
+            configClient.println("OK FROM DEVICE");
+            
+          }
+          if (c == '\n') {
+            // you're starting a new line
+            currentLineIsBlank = true;
+          } else if (c != '\r') {
+            // you've gotten a character on the current line
+            currentLineIsBlank = false;
+          }
+        } else {
+          delay(1);
+          configClient.stop();  // close the connection:
+          println("client disconnected");
+        }
+      }
+      
+      delay(1);
+      configClient.stop();  // close the connection:
+      println("client disconnected");
+    }
+
+    currentLine.trim(); //clear whitespace
+    if (bodyFound) {
+      DeserializationError error = deserializeJson(doc, currentLine); //body is JSON, try to parse
+      if (error) {
+        print(F("deserializeJson() failed: "));
+        println(error.c_str());
+      } else {
+        bodyFound = false;
+        String testString = doc["test"];
+        println(testString);
+        String testString2 = doc["test2"];
+        println(testString2);
+      }
+    }
+    
+
+
+
+
+        
+//      WiFiClient configClient = server.available();
+//      if (configClient) {
+//        println("new client");
+//        // an http request ends with a blank line
+//        boolean currentLineIsBlank = true;
+//        while (configClient.connected()) {
+//          if (configClient.available()) {
+//            char c = configClient.read();
+//            write(c);
+//            // if you've gotten to the end of the line (received a newline
+//            // character) and the line is blank, the http request has ended,
+//            // so you can send a reply
+//            if (c == '\n' && currentLineIsBlank) {
+//              // send a standard http response header
+//              configClient.println("HTTP/1.1 200 OK");
+//              configClient.println("Content-Type: text/html");
+//              configClient.println("Connection: close");  // the connection will be closed after completion of the response
+////              configClient.println("Refresh: 5");  // refresh the page automatically every 5 sec
+//              configClient.println();
+//              configClient.println("<!DOCTYPE HTML>");
+//              configClient.println("<html>hello</html>");
+//              
+//              break;
+//            }
+//            if (c == '\n') {
+//              // you're starting a new line
+//              currentLineIsBlank = true;
+//            } else if (c != '\r') {
+//              // you've gotten a character on the current line
+//              currentLineIsBlank = false;
+//            }
+//          }
+//        }
+//        // give the web browser time to receive the data
+//        delay(1);
+//    
+//        // close the connection:
+//        configClient.stop();
+//        println("client disconnected");
+//      }
+//  }
+}
+
 //*****************************************************************
 // Create a thread that transmits readings
 // this task will delete itself TODO when?
@@ -202,7 +348,7 @@ static void transmitReadingsThread( void *pvParameters )
       vTaskDelete( NULL );
     }
     transmitReadings();
-    xSemaphoreGive( NORM_semA );
+    xSemaphoreGive( NORM_semC );
   }
 }
 
@@ -407,6 +553,8 @@ void connectWifi() {
       my_flash_store.write(creds);
       println("Acknowledged first time connecting to wifi");
     }
+    server.begin();
+    delay(1);
     xSemaphoreGive( sem_WIFI_COMPLETE );
   } else {
     //fail
@@ -754,13 +902,15 @@ static void startNormalOperationThread( void *pvParameters )
 
   NORM_semA = xSemaphoreCreateBinary();
   NORM_semB = xSemaphoreCreateBinary();
+  NORM_semC = xSemaphoreCreateBinary();
 
-  if (NORM_semA == NULL || NORM_semB == NULL ) {
+  if (NORM_semA == NULL || NORM_semB == NULL || NORM_semC == NULL ) {
     println("Not enough freertos heap to create semaphore");
   }
 
   xTaskCreate(readSensorsThread,     "Normal Operation",       256, NULL, tskIDLE_PRIORITY + 2, &Handle_ReadSensorsTask);
   xTaskCreate(transmitReadingsThread,     "Normal Operation",       256, NULL, tskIDLE_PRIORITY + 2, &Handle_TransmitReadingsTask);
+  xTaskCreate(configServerThread,     "Config server",       256, NULL, tskIDLE_PRIORITY + 3, &Handle_ConfigServerTask);
 
   xSemaphoreGive( NORM_semA );
 
@@ -774,6 +924,7 @@ static void endNormalOperationThread( void *pvParameters )
 
   xSemaphoreGive( NORM_semA );
   xSemaphoreGive( NORM_semB );
+  xSemaphoreGive( NORM_semC );
 
   println("Normal Operation ended ");
   vTaskDelete( NULL );
@@ -804,7 +955,7 @@ static void startWiFiThread( void *pvParameters )
   xTaskCreate(checkWifiCredentialsThread, "Check wifi creds",        128, NULL, tskIDLE_PRIORITY + 2, &Handle_WifiCredCheckTask);
   xTaskCreate(openAccessPointThread,     "open access point",       128, NULL, tskIDLE_PRIORITY + 1, &Handle_APModeTask);
   xTaskCreate(handleAccessPointClientsThread,     "open access point",       256, NULL, tskIDLE_PRIORITY + 1, &Handle_APClientTask);
-  xTaskCreate(connectWifiThread,         "connect to wifi",         256, NULL, tskIDLE_PRIORITY + 1, &Handle_ConnectWiFiTask);  //needs 256 of stack
+  xTaskCreate(connectWifiThread,         "connect to wifi",         256, NULL, tskIDLE_PRIORITY + 5, &Handle_ConnectWiFiTask);  //needs 256 of stack
 
   xSemaphoreGive( semA );
 
@@ -928,9 +1079,9 @@ static void programFlowThread( void *pvParameters )
       xSemaphoreTake( sem_WIFI_CLEANUP, portMAX_DELAY ); //wait for completion
       wifitasks --;
     }
-    println("a lsfn ");
+//    println("a lsfn ");
     vSemaphoreDelete(sem_WIFI_COMPLETE);
-    println("foiua");
+//    println("foiua");
     vSemaphoreDelete(sem_WIFI_CLEANUP);
 
     println("WiFi threads successfully cleaned up");
@@ -965,7 +1116,7 @@ static void programFlowThread( void *pvParameters )
       , "Normal Operation"
       , 256
       , NULL
-      , tskIDLE_PRIORITY + 2
+      , tskIDLE_PRIORITY + 10
       , &Handle_StartNormalOperationTask);
     /* begin  */
     xSemaphoreTake( sem_NORMAL_COMPLETE, portMAX_DELAY ); //wait for completion
