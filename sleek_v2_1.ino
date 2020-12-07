@@ -168,7 +168,6 @@ static void readSensorsThread( void *pvParameters )
     //simulate execution
     myDelayMs(100);
     readSensors();
-    //    println("reading sensor");
 
     xSemaphoreGive( NORM_semB );
   }
@@ -202,14 +201,7 @@ static void transmitReadingsThread( void *pvParameters )
       println("transmitReadingsThread finished");
       vTaskDelete( NULL );
     }
-    //simulate execution
-    //    myDelayMs(500);
-    //    println("transmitting readings");
-
     transmitReadings();
-    //    String payload = buildPayload();
-    //    println(payload);
-
     xSemaphoreGive( NORM_semA );
   }
 }
@@ -266,15 +258,6 @@ static void checkUDPTargetThread( void *pvParameters )
     }
 
     checkUDPTarget();
-    //    myDelayMs(1000); // every 1 second
-    //    if(!succ) {
-    //      println("udp target bad");
-    //      xSemaphoreGive( UDP_semB );
-    //      succ = true;
-    //    } else {
-    //      println("udp target good");
-    //      xSemaphoreGive( sem_UDP_COMPLETE );
-    //    }
   }
 }
 
@@ -479,8 +462,6 @@ static void openAccessPointThread( void *pvParameters )
 }
 
 void openAccessPoint() {
-  //  char ssid[] = SECRET_SSID;        // your network SSID (name)
-  //  "sleek_device_1nf7noui2t"
   randomSeed(analogRead(0));
   int DEVICE_ID = random(2147483647);
   String ssid_string = "sleek_device_" + String(DEVICE_ID);
@@ -530,10 +511,6 @@ static void handleAccessPointClientsThread( void *pvParameters )
     }
 
     handleAccessPointClients();
-    //    myDelayMs(1000);
-    //
-    //    println("AP clients good");
-    //    xSemaphoreGive( semB );
   }
 }
 
@@ -649,21 +626,6 @@ void handleAccessPointClients() {
           creds.confirmed = false;
 
           gotCreds = true;
-
-          //          // ...and finally save everything into "my_flash_store"
-          //          my_flash_store.write(creds);
-          //
-          //          SERIAL_PORT_MONITOR.println();
-          //          SERIAL_PORT_MONITOR.print("Your ssid: ");
-          //          SERIAL_PORT_MONITOR.println(creds.ssid);
-          //          SERIAL_PORT_MONITOR.print("and your password: ");
-          //          SERIAL_PORT_MONITOR.println(creds.password);
-          //          SERIAL_PORT_MONITOR.println("have been saved. Thank you!");
-          //
-          ////          WiFi.end();
-          //          xSemaphoreGive( semB);
-          //          xSemaphoreTake( semF, portMAX_DELAY );
-
 
         }
       }
