@@ -122,6 +122,11 @@ void myDelayMs(int ms)
   vTaskDelay( (ms * 1000) / portTICK_PERIOD_US );
 }
 
+void myDelayMsFloat(float ms)
+{
+  vTaskDelay( (ms * 1000) / portTICK_PERIOD_US );
+}
+
 void println(String text) {
   if (SERIAL) {
     SERIAL.println(text);
@@ -188,10 +193,15 @@ static void readSensorsThread( void *pvParameters )
       println("readSensorsThread Thread finished");
       vTaskDelete( NULL );
     }
-    //simulate execution
-    int sampling_delay = 1000 / conf.samplingRate;
     
-    myDelayMs(sampling_delay);
+    float sampling_delay;
+    if (conf.samplingRate == 0) { //sample rate of 0 means dont transmit. delay approaches inf
+      sampling_delay = 1000000; //some big number
+    } else {
+      sampling_delay = 1000 / conf.samplingRate;
+    }
+    
+    myDelayMsFloat(sampling_delay);
     readSensors();
 
     xSemaphoreGive( NORM_semB );
@@ -299,12 +309,12 @@ static void configServerHandler()
       println(samplingRateString);
       int SR_temp = samplingRateString.toInt();
       
-      if (SR_temp && SR_temp > 0 && SR_temp < 300) {  //error handling
+      if (SR_temp && SR_temp > 0 && SR_temp <= 10000) {  //error handling
         conf = configuration_flash_store.read();
         conf.samplingRate = SR_temp;
         configuration_flash_store.write(conf);
       } else {
-        println("Enter samplingRate between 0 and 300");
+        println("Enter samplingRate between 0 and 10000");
       }
     }
   }
@@ -366,8 +376,8 @@ String buildPayload() {
 
 
 //*****************************************************************
-// Create a thread that checks wifi credentials presence
-// this task will delete itself after finding credentials
+// Create a thread that checks udp target presence
+// this task will delete itself after checking config
 //*****************************************************************
 static void checkUDPTargetThread( void *pvParameters )
 {
@@ -418,7 +428,7 @@ static void findLocalNodeThread( void *pvParameters )
   }
 }
 
-char context_server[] = "sleek-v2-firebase.herokuapp.com";    // name address for Google (using DNS)
+char context_server[] = "sleek-v2-firebase.herokuapp.com"; 
 void findLocalNode() {
 
   WiFiClient client;
@@ -457,7 +467,6 @@ void findLocalNode() {
         bodyFound = false;
 
         udpTarget.port = doc["port"];
-        //          udpTarget.ip = doc["ip"];
         String ip = doc["ip"];
         ip.toCharArray(udpTarget.ip, 100);
         udpTarget.valid = true;
