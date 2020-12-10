@@ -5,13 +5,17 @@
 
 #include <FlashStorage.h>
 #include "arduino_secrets.h"
+#include <ArduinoUniqueID.h>
+String ID;
 #include <WiFiNINA.h>
 int status = WL_IDLE_STATUS;
 int IMU_status = 0;
 WiFiServer server(80);
-WiFiServer configServer(79);
+//WiFiServer configServer(79);
 
 //#define SECRET_SSID "sleek_device_1nf7noui2t"   //TODO: generate the identifier thing
+
+char context_server[] = "sleek-v2-firebase.herokuapp.com"; 
 
 #include <WiFiUdp.h>
 
@@ -44,6 +48,7 @@ typedef struct {
 
 //put all kinds of configurable local variables in here
 typedef struct {
+  boolean valid;
   int samplingRate;
   //String name;
 } Configuration;
@@ -164,6 +169,68 @@ void print(int i) {
   print(s);
 }
 
+void setSamplingRate(float rate) {
+  bool succ = false;
+  if (rate && rate > 0 && rate <= 10000) {  //error handling
+    conf = configuration_flash_store.read();
+    conf.samplingRate = rate;
+    conf.valid = true;
+    configuration_flash_store.write(conf);
+    succ = true;
+  } else {
+    println("Enter samplingRate between 0 and 10000");
+  }
+
+  //if new value set to sampling rate, update value in cloud also
+  if (succ) {
+    WiFiClient client;
+    boolean looping = true;
+    String config_json = "{\"samplingRate\":";
+    config_json += conf.samplingRate;
+    config_json += "}";
+  
+    //set config
+    //post request to device edit with this device's serial number as id 
+    //tell system that this device is awake
+    if (client.connect(context_server, 80)) {
+      println("Updating sampling rate in cloud");
+      // Make a HTTP request:
+      client.print("POST /api/devices/");
+      client.print(ID);
+      client.println("/edit HTTP/1.1");
+      client.print("Host: ");
+      client.println(context_server);
+      client.println("User-Agent: Arduino/1.0");
+      client.println("Content-Type: application/json;charset=UTF-8");
+      client.println("Connection: close");
+      client.print("Content-Length: ");
+      client.println(config_json.length());// number of bytes in the payload
+      client.println();
+      client.println(config_json);
+      client.println();
+    }
+    while (looping) {
+      char prevChar = 'a';  //dummy char
+      String currentLine = ""; //store response body
+      boolean bodyFound = false;
+      while (client.available()) {
+        char c = client.read();
+      }
+  
+      // if the server's disconnected, stop the client:
+      if (!client.connected()) {
+        println();
+        println("disconnecting from server.");
+        client.stop();
+        looping = false;
+      }
+    }
+  }
+}
+
+void setSamplingRate(String rate) {
+  setSamplingRate(rate.toInt());
+}
 
 //*****************************************************************
 // Create a thread that reads sensor for acceleration and gyroscope
@@ -181,9 +248,9 @@ static void readSensorsThread( void *pvParameters )
   }
 
   //set output rate
-  conf = configuration_flash_store.read();
-  conf.samplingRate = 10;
-  configuration_flash_store.write(conf);
+//  conf = configuration_flash_store.read();
+//  conf.samplingRate = 10;
+//  configuration_flash_store.write(conf);
         
   while (true) {
     xSemaphoreTake( NORM_semA, portMAX_DELAY );
@@ -306,15 +373,16 @@ static void configServerHandler()
       String samplingRateString = doc["samplingRate"];
       print("Incoming SR request: ");
       println(samplingRateString);
-      int SR_temp = samplingRateString.toInt();
-      
-      if (SR_temp && SR_temp > 0 && SR_temp <= 10000) {  //error handling
-        conf = configuration_flash_store.read();
-        conf.samplingRate = SR_temp;
-        configuration_flash_store.write(conf);
-      } else {
-        println("Enter samplingRate between 0 and 10000");
-      }
+      setSamplingRate(samplingRateString);
+//      int SR_temp = samplingRateString.toInt();
+//      
+//      if (SR_temp && SR_temp > 0 && SR_temp <= 10000) {  //error handling
+//        conf = configuration_flash_store.read();
+//        conf.samplingRate = SR_temp;
+//        configuration_flash_store.write(conf);
+//      } else {
+//        println("Enter samplingRate between 0 and 10000");
+//      }
     }
   }
 }
@@ -342,8 +410,8 @@ static void transmitReadingsThread( void *pvParameters )
 void transmitReadings() {
   Udp.beginPacket(udpTarget.ip, udpTarget.port);
   String msgbuffer = buildPayload();
-  char chrbuffer[100];
-  msgbuffer.toCharArray(chrbuffer, 100);
+  char chrbuffer[120]; //can't send limitlessly long messages
+  msgbuffer.toCharArray(chrbuffer, 120);
   Udp.write(chrbuffer);
   Udp.endPacket();
 }
@@ -368,16 +436,25 @@ String buildPayload() {
   payload += "\"gz\": \"";
   payload += gyroscope_z;
   payload += "\"";
+  payload += ",\"id\": \"";
+  payload += ID;
+  payload += "\"";
   payload += "}";
   return payload;
 }
-
 
 
 //*****************************************************************
 // Create a thread that checks udp target presence
 // this task will delete itself after checking config
 //*****************************************************************
+
+//*****************************************************************
+//                            UPDATE id=6767 (arbitrarily chosen id)
+//*****************************************************************
+//UDP thread now checks for more than just udp config.
+//For example, it also checks sampling rate, and will be modified
+//to check even more things. TODO: reconsider operation flow chart and rename thread
 static void checkUDPTargetThread( void *pvParameters )
 {
   boolean succ = false;
@@ -396,8 +473,11 @@ static void checkUDPTargetThread( void *pvParameters )
 
 void checkUDPTarget() {
   udpTarget = udpTarget_flash_store.read();
+  conf = configuration_flash_store.read();
   myDelayMs(500); // every 0.5 second
-  if (udpTarget.valid == false) {
+  if (udpTarget.valid == false || conf.valid == false) {
+//  if (true) { //UPDATE 6767. Always get config upon startup
+    //TODO: Do better than this; set variable on startup so that loops exactly once
     println("UDP TARGET NOT KNOWN");
     flush();
     xSemaphoreGive( UDP_semB );
@@ -427,20 +507,126 @@ static void findLocalNodeThread( void *pvParameters )
   }
 }
 
-char context_server[] = "sleek-v2-firebase.herokuapp.com"; 
+
+
+//rename to get configs from context?
+//does more than just request a UDP address
 void findLocalNode() {
 
   WiFiClient client;
+  boolean looping = true;
+  String config_json = "{\"message\":\"awake\"}"; 
+
+  //set config
+  //post request to device edit with this device's serial number as id 
+  //tell system that this device is awake
   if (client.connect(context_server, 80)) {
-    println("connected to server");
+    println("connected to server. POSTing awakeness");
     // Make a HTTP request:
-    client.println("GET /api/node HTTP/1.1");
-    client.println("Host: sleek-v2-firebase.herokuapp.com");
+    client.print("POST /api/devices/");
+    client.print(ID);
+    client.println("/edit HTTP/1.1");
+    client.print("Host: ");
+    client.println(context_server);
+    client.println("User-Agent: Arduino/1.0");
+    client.println("Content-Type: application/json;charset=UTF-8");
+    client.println("Connection: close");
+    client.print("Content-Length: ");
+    client.println(config_json.length());// number of bytes in the payload
+    client.println();
+    client.println(config_json);
+    client.println();
+  }
+  while (looping) {
+    char prevChar = 'a';  //dummy char
+    String currentLine = ""; //store response body
+    boolean bodyFound = false;
+    while (client.available()) {
+      char c = client.read();
+    }
+
+    // if the server's disconnected, stop the client:
+    if (!client.connected()) {
+      println();
+      println("disconnecting from server.");
+      client.stop();
+      looping = false;
+    }
+  }
+
+
+  //get config
+  //ask system what has sampling rate previously been set to
+  if (client.connect(context_server, 80)) {
+    println("connected to server. GETting configuration");
+    // Make a HTTP request:
+    client.print("GET /api/devices/");
+    client.print(ID);
+    client.println(" HTTP/1.1");
+    client.print("Host: ");
+    client.println(context_server);
+    client.println();
     client.println("Connection: close");
     client.println();
   }
 
-  boolean looping = true;
+  looping = true;
+  while (looping) {
+    char prevChar = 'a';  //dummy char
+    String currentLine = ""; //store response body
+    boolean bodyFound = false;
+    while (client.available()) {
+      char c = client.read();
+      if (bodyFound) {
+        currentLine += c; //accumulate characters only when body upcoming
+      }
+
+      if (prevChar == '\n' && c == '\r') { //somehow this means body starting
+        bodyFound = true;
+      }
+      prevChar = c;
+    }
+    currentLine.trim(); //clear whitespace
+    if (bodyFound) {
+      DeserializationError error = deserializeJson(doc, currentLine); //body is JSON, try to parse
+      if (error) {
+        //for example, poorly structured response
+        print(F("deserializeJson() failed: "));
+        println(error.c_str());
+        //maybe a null
+      } else {
+        bodyFound = false;
+
+        String samplingRate = doc["samplingRate"];
+      
+        println(samplingRate);
+        setSamplingRate(samplingRate);
+      }
+    }
+
+    // if the server's disconnected, stop the client:
+    if (!client.connected()) {
+      println();
+      println("disconnecting from server.");
+      client.stop();
+      looping = false;
+    }
+  }
+
+
+  //ask system where to stream data to
+  if (client.connect(context_server, 80)) {
+    println("connected to server. GETting UDP target");
+    // Make a HTTP request:
+    client.println("GET /api/node HTTP/1.1");
+//    client.println("Host: sleek-v2-firebase.herokuapp.com");
+    client.print("Host: ");
+    client.println(context_server);
+    client.println("Connection: close");
+    client.println();
+  }
+
+  looping = true;
   while (looping) {
     char prevChar = 'a';  //dummy char
     String currentLine = ""; //store response body
@@ -491,6 +677,53 @@ void findLocalNode() {
       looping = false;
     }
   }
+
+
+
+
+
+  //tell udp target that this device is awake
+  //to make known the local ip
+  looping = true;
+  config_json = "{\"id\":";
+  config_json += ID;
+  config_json += "}";
+
+  if (client.connect(udpTarget.ip, 3002)) {
+    println("connected to server. POSTing awakeness to local node");
+    // Make a HTTP request:
+    client.print("POST /api/devices/");
+    client.print(ID);
+    client.println(" HTTP/1.1");
+    client.print("Host: ");
+    client.println(udpTarget.ip);
+    client.println("User-Agent: Arduino/1.0");
+    client.println("Content-Type: application/json;charset=UTF-8");
+    client.println("Connection: close");
+    client.print("Content-Length: ");
+    client.println(config_json.length());// number of bytes in the payload
+    client.println();
+    client.println(config_json);
+    client.println();
+  }
+  while (looping) {
+    char prevChar = 'a';  //dummy char
+    String currentLine = ""; //store response body
+    boolean bodyFound = false;
+    while (client.available()) {
+      char c = client.read();
+    }
+
+    // if the server's disconnected, stop the client:
+    if (!client.connected()) {
+      println();
+      println("disconnecting from server.");
+      client.stop();
+      looping = false;
+    }
+  }
+
+  
 }
 
 //*****************************************************************
@@ -1360,15 +1593,40 @@ void setup() {
 
   pinMode(LED_BUILTIN, OUTPUT);
 
-#ifdef SECRETS_VALID
-#if SECRETS_VALID
-  strcpy(creds.ssid, SECRET_SSID);
-  strcpy(creds.password, SECRET_PASS);
-  creds.valid = true;
-  my_flash_store.write(creds);
-#endif 
-#endif
 
+  //ability to provide network creds in source code
+  #ifdef SECRETS_VALID
+  #if SECRETS_VALID
+    strcpy(creds.ssid, SECRET_SSID);
+    strcpy(creds.password, SECRET_PASS);
+    creds.valid = true;
+    my_flash_store.write(creds);
+  #endif 
+  #endif
+
+  ID = "";
+
+  UniqueID8dump(Serial);
+  print("UniqueID: ");
+  for (size_t i = 0; i < 8; i++)
+  {
+//    if (UniqueID8[i] < 0x10)
+//      print("0");
+//    print(UniqueID8[i], HEX);
+//    print(" ");
+    ID += UniqueID8[i];
+  }
+  println();
+
+
+  //set on startup the configuration to invalid
+  conf = configuration_flash_store.read();
+  conf.valid = false;
+  configuration_flash_store.write(conf);
+
+  udpTarget = udpTarget_flash_store.read();
+  udpTarget.valid = false;
+  udpTarget_flash_store.write(udpTarget);
 
   // Set the led the rtos will blink when we have a fatal rtos error
   // Error Blink Codes:
