@@ -4,14 +4,14 @@
 
 
 #include <FlashStorage.h>
-
+#include "arduino_secrets.h"
 #include <WiFiNINA.h>
 int status = WL_IDLE_STATUS;
 int IMU_status = 0;
 WiFiServer server(80);
 WiFiServer configServer(79);
 
-#define SECRET_SSID "sleek_device_1nf7noui2t"   //TODO: generate the identifier thing
+//#define SECRET_SSID "sleek_device_1nf7noui2t"   //TODO: generate the identifier thing
 
 #include <WiFiUdp.h>
 
@@ -51,7 +51,6 @@ typedef struct {
 
 
 FlashStorage(my_flash_store, Credentials);
-
 Credentials creds;
 
 FlashStorage(udpTarget_flash_store, UDPTarget);
@@ -1351,7 +1350,7 @@ void setup() {
   SERIAL.begin(115200);
 
   delay(1000); // prevents usb driver crash on startup, do not omit this
-  //  while (!SERIAL) ;  // Wait for serial terminal to open port before starting program
+  while (!SERIAL) ;  // Wait for serial terminal to open port before starting program
 
   println("");
   println("******************************");
@@ -1360,6 +1359,16 @@ void setup() {
   flush();
 
   pinMode(LED_BUILTIN, OUTPUT);
+
+#ifdef SECRETS_VALID
+#if SECRETS_VALID
+  strcpy(creds.ssid, SECRET_SSID);
+  strcpy(creds.password, SECRET_PASS);
+  creds.valid = true;
+  my_flash_store.write(creds);
+#endif 
+#endif
+
 
   // Set the led the rtos will blink when we have a fatal rtos error
   // Error Blink Codes:
